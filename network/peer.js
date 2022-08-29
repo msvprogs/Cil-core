@@ -473,7 +473,8 @@ module.exports = (factory) => {
                 ...this.peerInfo.data,
                 lifetimeMisbehaveScore: 0,
                 lifetimeTransmittedBytes: 0,
-                lifetimeReceivedBytes: 0
+                lifetimeReceivedBytes: 0,
+                failedConnectionsCount: 0
             };
         }
 
