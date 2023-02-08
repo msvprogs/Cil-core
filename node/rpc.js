@@ -27,7 +27,9 @@ module.exports = ({Constants, Transaction, StoredWallet, UTXO, Coins}) =>
             this._server = rpc.Server.$create({
                 websocket: true,
                 headers: {
-                    'Access-Control-Allow-Origin': '*'
+                    'Access-Control-Allow-Origin': '*',
+                    'Access-Control-Allow-Methods': 'GET,HEAD,PUT,PATCH,POST,DELETE',
+                    'Access-Control-Allow-Headers': '*'
                 },
 
                 // this allow override defaults above
@@ -55,7 +57,7 @@ module.exports = ({Constants, Transaction, StoredWallet, UTXO, Coins}) =>
             this._server.expose('watchAddress', asyncRPC(this.watchAddress.bind(this)));
             this._server.expose('getWalletsAddresses', asyncRPC(this.getWalletsAddresses.bind(this)));
             this._server.expose('getWitnesses', asyncRPC(this.getWitnesses.bind(this)));
-            this._server.expose('countWallets', asyncRPC(this.countWallets.bind(this)));
+//            this._server.expose('countWallets', asyncRPC(this.countWallets.bind(this)));
             this._server.expose('getLastBlockByConciliumId', asyncRPC(this.getLastBlockByConciliumId.bind(this)));
 
             this._server.expose('unlockAccount', asyncRPC(this.unlockAccount.bind(this)));

@@ -469,7 +469,8 @@ module.exports = (factory, factoryOptions) => {
                     let bShouldRequest = false;
                     if (objVector.type === Constants.INV_TX) {
 
-                        bShouldRequest = !this._mempool.hasTx(objVector.hash);
+                        bShouldRequest = !this._mempool.hasTx(objVector.hash) &&
+                                         !this._isInitialBlockLoading();
                         if (bShouldRequest) {
                             try {
                                 await this._storage.getUtxo(objVector.hash, true).catch();
@@ -478,10 +479,17 @@ module.exports = (factory, factoryOptions) => {
                             }
                         }
                     } else if (objVector.type === Constants.INV_BLOCK) {
-                        bShouldRequest = !this._storage.isBlockBanned(objVector.hash) &&
-                                         !this._requestCache.isRequested(objVector.hash) &&
-                                         !await this._isBlockKnown(objVector.hash.toString('hex'));
+                        const strHash=objVector.hash.toString('hex');
+                        const bBlockKnown=await this._isBlockKnown(strHash);
+                        bShouldRequest = !this._storage.isBlockBanned(strHash) &&
+                                         !this._requestCache.isRequested(strHash) &&
+                                         !bBlockKnown;
                         if (bShouldRequest) nBlockToRequest++;
+
+                        // i.e. we store it, it somehow missed dag
+                        if(bBlockKnown && this._mainDag.getBlockInfo(strHash)) {
+                            this._queueBlockExec(strHash, peer);
+                        }
                     }
 
                     if (bShouldRequest) {
@@ -776,7 +784,7 @@ module.exports = (factory, factoryOptions) => {
                     }
                 } else {
                     peer.updatePeerFromPeerInfo(message.peerInfo);
-                    const result = this._peerManager.addPeer(peer, true);
+                    this._peerManager.addPeer(peer, true);
                 }
 
                 this._adjustNetworkTime(_offset);
@@ -883,7 +891,7 @@ module.exports = (factory, factoryOptions) => {
             const msg = new MsgGetBlocks();
             const arrLastApplied = await this._storage.getLastAppliedBlockHashes();
             const arrTips = this._pendingBlocks.getTips();
-            msg.arrHashes = arrLastApplied.concat(arrTips);
+            msg.arrHashes = arrTips.length ? arrTips : arrLastApplied;
             return msg;
         }
 
@@ -998,7 +1006,8 @@ module.exports = (factory, factoryOptions) => {
             newTx.verify();
 
             const strNewTxHash = newTx.getHash();
-            assert(!this._mempool.hasTx(strNewTxHash), 'Tx already in mempool');
+            if(this._mempool.hasTx(strNewTxHash)) throw new Error('Tx already in mempool');
+            if(this._mempool.isBadTx(strNewTxHash)) throw new Error('Tx already marked as bad');
 
             const lock = await this._mutex.acquire(['blockExec']);
 
@@ -1015,11 +1024,11 @@ module.exports = (factory, factoryOptions) => {
                 // all merges passed - accept new tx
                 this._mempool.addLocalTx(newTx, patchNewTx);
 
-                // inform 2 pseudorandom neighbours about new Tx
                 await this._informNeighbors(newTx);
             } catch (e) {
                 logger.error(e);
-                throw new Error(`Tx is not accepted: ${e.message}`);
+                this._mempool.storeBadTxHash(strNewTxHash);
+                throw new Error(`Tx ${strNewTxHash} is not accepted: ${e.message}`);
             } finally {
                 this._mutex.release(lock);
             }
@@ -1042,7 +1051,6 @@ module.exports = (factory, factoryOptions) => {
 
             if (this._mempool.hasTx(tx.hash())) return;
 
-            let patchThisTx;
             try {
                 await this._storage.checkTxCollision([strTxHash]);
                 await this._validateTxLight(tx);
@@ -1256,6 +1264,7 @@ module.exports = (factory, factoryOptions) => {
                 coinsLimit
             });
 
+            const lock = await this._mutex.acquire(['application']);
             try {
                 if (!contract) {
                     if (coinsLimit < nFeeContractCreation) {
@@ -1310,6 +1319,8 @@ module.exports = (factory, factoryOptions) => {
                 logger.error('Error in contract!', err);
                 status = Constants.TX_STATUS_FAILED;
                 message = err.message ? err.message : err.toString();
+            }finally {
+                this._mutex.release(lock);
             }
 
             receipt = new TxReceipt({
@@ -1537,7 +1548,7 @@ module.exports = (factory, factoryOptions) => {
 
             // process coinbase tx
             if (!isGenesis) {
-                this._processBlockCoinbaseTX(block, blockFees, patchState);
+                await this._processBlockCoinbaseTX(block, blockFees, patchState);
             }
 
             debugNode(`Block ${block.getHash()} being executed`);
@@ -1551,8 +1562,9 @@ module.exports = (factory, factoryOptions) => {
          * @param {PatchDB} patchState - patch to add coins
          * @private
          */
-        _processBlockCoinbaseTX(block, blockFees, patchState) {
+        async _processBlockCoinbaseTX(block, blockFees, patchState) {
             const coinbase = new Transaction(block.txns[0]);
+            await this._storage.checkTxCollision([coinbase.getHash()]);
             if (!this.isGenesisBlock(block)) coinbase.verifyCoinbase(blockFees);
             const coins = coinbase.getOutCoins();
             for (let i = 0; i < coins.length; i++) {
@@ -1871,6 +1883,11 @@ module.exports = (factory, factoryOptions) => {
         async _isBlockKnown(hash) {
             const blockInfo = this._mainDag.getBlockInfo(hash);
             return blockInfo || await this._storage.hasBlock(hash);
+        }
+
+        async _couldBeResurrected(hash) {
+            const blockInfo = this._mainDag.getBlockInfo(hash);
+            return !blockInfo && await this._storage.hasBlock(hash);
         }
 
         /**
@@ -2327,34 +2344,38 @@ module.exports = (factory, factoryOptions) => {
                 [method, arrArguments, contractAddress]
             );
 
-            let contract = await this._storage.getContract(contractAddress);
+            const lock = await this._mutex.acquire(['transaction', 'application']);
+            try {
+                let contract = await this._storage.getContract(contractAddress);
 
-            if (!completed) {
-                const pendingContract = this._pendingBlocks.getContract(contractAddress, contract.getConciliumId());
-                if (pendingContract) contract = pendingContract;
+                if (!completed) {
+                    const pendingContract = this._pendingBlocks.getContract(contractAddress, contract.getConciliumId());
+                    if (pendingContract) contract = pendingContract;
+                }
+
+                if (!contract) throw new Error(`Contract ${contractAddress} not found`);
+
+                const newEnv = {
+                    contractAddr: contract.getStoredAddress(),
+                    balance: contract.getBalance()
+                };
+
+                const nCoinsDummy = Number.MAX_SAFE_INTEGER;
+                this._app.setCallbacks(this._createCallbacksForApp(new PatchDB(), new PatchDB(), '1'.repeat(64)));
+                this._app.setupVariables({
+                    objFees: { nFeeContractInvocation: nCoinsDummy },
+                    nCoinsDummy
+                });
+                return await this._app.runContract(
+                    { method, arrArguments },
+                    contract,
+                    newEnv,
+                    undefined,
+                    true
+                );
+            } finally {
+                this._mutex.release(lock);
             }
-
-            if (!contract) throw new Error(`Contract ${contractAddress} not found`);
-
-            const newEnv = {
-                contractAddr: contract.getStoredAddress(),
-                balance: contract.getBalance()
-            };
-
-            const nCoinsDummy = Number.MAX_SAFE_INTEGER;
-            this._app.setCallbacks(this._createCallbacksForApp(new PatchDB(), new PatchDB(), '1'.repeat(64)));
-            this._app.setupVariables({
-                objFees: {nFeeContractInvocation: nCoinsDummy},
-                nCoinsDummy
-            });
-
-            return await this._app.runContract(
-                {method, arrArguments},
-                contract,
-                newEnv,
-                undefined,
-                true
-            );
         }
 
         /**
