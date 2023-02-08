@@ -9,7 +9,7 @@ const {arrayIntersection, getMapsKeysUnique} = require('../utils');
 
 // Could be used for undo blocks
 
-module.exports = ({UTXO, Contract, TxReceipt}) =>
+module.exports = ({UTXO, Contract, TxReceipt, CoinHistory}) =>
     class PatchDB {
         constructor(nConciliumId) {
             this._data = {
@@ -26,9 +26,12 @@ module.exports = ({UTXO, Contract, TxReceipt}) =>
             this._mapTxReceipts = new Map();
 
             this._nonce = 0;
+
+            this._coinHistory = new CoinHistory();
         }
 
         /**
+         * Used for tests only
          *
          * @param {String} strData
          * @returns {*}
@@ -50,6 +53,7 @@ module.exports = ({UTXO, Contract, TxReceipt}) =>
         }
 
         /**
+         * Used for tests only
          *
          * @returns {String}
          */
@@ -96,6 +100,8 @@ module.exports = ({UTXO, Contract, TxReceipt}) =>
             utxo.addCoins(idx, coins);
 
             this._data.coins.set(txHash, utxo);
+
+            this._coinHistory.recordReceive(txHash, idx, coins);
         }
 
         /**
@@ -126,6 +132,10 @@ module.exports = ({UTXO, Contract, TxReceipt}) =>
             typeforce(types.UTXO, utxo);
 
             this._data.coins.set(utxo.getTxHash(), utxo.clone());
+            const txHash = utxo.getTxHash();
+            for (let idx of utxo.getIndexes()) {
+                this._coinHistory.recordReceive(txHash, idx, utxo.coinsAtIndex(idx));
+            }
         }
 
         /**
@@ -264,6 +274,8 @@ module.exports = ({UTXO, Contract, TxReceipt}) =>
                 resultPatch.setReceipt(strHash, receipt);
             }
 
+            if (this._coinHistory) resultPatch._coinHistory = this._coinHistory.mergeHistory(patch._coinHistory);
+
             return resultPatch;
         }
 
@@ -316,6 +328,8 @@ module.exports = ({UTXO, Contract, TxReceipt}) =>
             for (let strHash of patch._mapTxReceipts.keys()) {
                 if (this._mapTxReceipts.has(strHash)) this._mapTxReceipts.delete(strHash);
             }
+
+            this._coinHistory.purgeHistory(patch._coinHistory);
         }
 
         /**
@@ -515,5 +529,9 @@ module.exports = ({UTXO, Contract, TxReceipt}) =>
             this._data.coins.delete(strHash);
             this._mapSpentUtxos.delete(strHash);
 
+        }
+
+        get coinHistory() {
+            return this._coinHistory;
         }
     };

@@ -91,6 +91,8 @@ module.exports = (factory, factoryOptions) => {
             this._initPeerDb();
             this._initTxDb();
 
+            this._coinHistory = levelup(this._downAdapter(`${this._pathPrefix}/${Constants.DB_COINHISTORY_DIR}`));
+
             // TODO: make it persistent after adding first address/key to wallet?
             if (walletSupport) {
                 this._walletSupport = true;
@@ -132,6 +134,10 @@ module.exports = (factory, factoryOptions) => {
 
         static createInternalTxKey(hash) {
             return this.createKey(INTENRAL_TX_INDEX_PREFIX, Buffer.from(hash, 'hex'));
+        }
+
+        static createTxKey(hash) {
+            return this.createKey(TX_INDEX_PREFIX, Buffer.from(hash, 'hex'));
         }
 
         static createTxKey(hash) {
@@ -478,6 +484,8 @@ module.exports = (factory, factoryOptions) => {
 
                 // BATCH WRITE
                 await this._db.batch(arrOps);
+
+                await this._writeCoinHistory(statePatch);
             } finally {
                 this._mutex.release(lock);
                 await this._fixMainDb(arrOps.length);
@@ -954,6 +962,7 @@ module.exports = (factory, factoryOptions) => {
                 await levelDbDestroy(`${this._pathPrefix}/${Constants.DB_CHAINSTATE_DIR}`);
                 await levelDbDestroy(`${this._pathPrefix}/${Constants.DB_PEERSTATE_DIR}`);
                 await levelDbDestroy(`${this._pathPrefix}/${Constants.DB_TXINDEX_DIR}`);
+                await levelDbDestroy(`${this._pathPrefix}/${Constants.DB_COINHISTORY_DIR}`);
 
                 if (bEraseBlockStorage) {
                     console.log('INFO: erased blockstate!');
@@ -968,6 +977,7 @@ module.exports = (factory, factoryOptions) => {
             await this._peerStorage.close();
             if (this._txIndexStorage) await this._txIndexStorage.close();
             if (this._walletStorage) await this._walletStorage.close();
+            if (this._coinHistory) await this._coinHistory.close();
         }
 
         async* readBlocks() {
@@ -1183,6 +1193,59 @@ module.exports = (factory, factoryOptions) => {
                 await this._reInitMainDb();
                 this._nPutCount = 0;
             }
+		}
+
+        async _writeCoinHistory(statePatch) {
+            if (!statePatch.coinHistory) return;
+
+            const arrOps = [];
+
+            for (let [strHash, arrUtxos] of statePatch.coinHistory) {
+                const buffTxHash = Buffer.from(strHash, 'hex');
+                for (let [buffAddr, nAmount, nVout] of arrUtxos) {
+                    const buffSuffix = Buffer.allocUnsafe(32 + 2);
+                    const buffForAmount = Buffer.allocUnsafe(8);
+                    buffTxHash.copy(buffSuffix);
+                    buffSuffix.writeUInt16LE(nVout, 32);
+                    buffForAmount.writeDoubleLE(nAmount);
+                    const key = this.constructor.createKey('', Buffer.from(buffAddr, 'hex'), buffSuffix);
+                    arrOps.push({type: 'put', key, value: buffForAmount});
+                }
+            }
+
+            await this._coinHistory.batch(arrOps);
+
+            return arrOps.length;
+        }
+
+        async getCoinHistory(strAddress) {
+            const startPrefix = Buffer.from(strAddress, 'hex');
+            const endPrefix = Buffer.alloc(startPrefix.length + 32 + 2, 0xff);
+            startPrefix.copy(endPrefix);
+
+            const stream = this._coinHistory.createReadStream({
+                gte: startPrefix,
+                lte: endPrefix,
+                keyAsBuffer: true,
+                valueAsBuffer: true
+            });
+
+            const arrRecords = [];
+            return new Promise((resolve, reject) => {
+                stream
+                    .on('data', ({key, value}) => {
+                        const buffTxHash = key.slice(20, 20 + 32);
+                        const nVOut = key.readUInt16LE(20 + 32);
+                        const nAmount = value.readDoubleLE();
+                        arrRecords.push([buffTxHash, nVOut, nAmount]);
+                    })
+                    .on('close', _ => {
+                        resolve(arrRecords);
+                    })
+                    .on('error', function(err) {
+                        reject(err);
+                    });
+            });
         }
     };
 };
