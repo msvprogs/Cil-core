@@ -30,8 +30,6 @@ const INTENRAL_TX_INDEX_PREFIX = 'I';
 
 const BANNED_BLOCKS_FILE = '.bannedBlocks.json';
 
-const N_OPS_BEFORE_DB_REOPEN = 2e4;
-
 const levelDbDestroy = util.promisify(leveldown.destroy);
 
 /**
@@ -1210,7 +1208,7 @@ module.exports = (factory, factoryOptions) => {
             return arrOps.length;
         }
 
-        async getCoinHistory(strAddress) {
+         getCoinHistory(strAddress) {
             const startPrefix = Buffer.from(strAddress, 'hex');
             const endPrefix = Buffer.alloc(startPrefix.length + 32 + 2, 0xff);
             startPrefix.copy(endPrefix);
