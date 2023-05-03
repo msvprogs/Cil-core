@@ -827,6 +827,26 @@ describe('Storage tests', () => {
         });
     });
 
+    describe('_fixMainDb', function() {
+        it('should be disabled by default', async () => {
+            const storage = new factory.Storage();
+
+            assert.isNotOk(storage._bFixDb);
+        });
+
+        it('should setup fix', async () => {
+            const storage = new factory.Storage();
+            storage._nPutCount = 1e6;
+            storage._bFixDb = true;
+            storage._reInitMainDb = sinon.fake();
+
+            await storage._fixMainDb();
+
+            assert.isOk(storage._reInitMainDb.calledOnce);
+            assert.equal(storage._nPutCount, 0);
+        });
+	});
+
     describe('ListSinceBlock (one by one!!)', function() {
         let storage;
         const buffAddr1 = Buffer.from('a'.repeat(40), 'hex');
@@ -877,6 +897,5 @@ describe('Storage tests', () => {
 
             assert.equal(nWrote, 2);
         });
-
     });
 });

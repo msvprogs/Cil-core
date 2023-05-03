@@ -32,8 +32,6 @@ module.exports = ({Constants, Transaction, StoredWallet, UTXO, Coins}) =>
                     'Access-Control-Allow-Headers': '*'
                 },
 
-                ratelimit: {maxPerInterval: rpcRate, msInterval: 1000},
-
                 // this allow override defaults above
                 ...options
             });
