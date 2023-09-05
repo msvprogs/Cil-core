@@ -454,7 +454,11 @@ module.exports = ({Constants, Transaction, StoredWallet, UTXO, Coins}) =>
                 for (let [utxo] of mapUtxoAddr) {
                     const buffSourceTx = await storage.findInternalTx(utxo.getTxHash()) ||
                                          Buffer.from(utxo.getTxHash(), 'hex');
-                    const strBlockHash = (await storage.getTxBlock(buffSourceTx)).toString('hex');
+                    const block = await storage.getTxBlock(buffSourceTx);
+                    if (!block)
+                        continue;
+                    
+                    const strBlockHash = block.toString('hex');
                     if (this._nodeInstance.sortBlocks(strBlockHash, strHashSince) > 0) {
                         arrFilteredArrayOfTxHashes.push(utxo);
                         mapTxBlock.set(utxo.getTxHash(), strBlockHash);
